@@ -5,7 +5,7 @@
 ## 业务场景
 知行职教有城东、城西、滨江、高新 4 个教学点。原流程由教学点导出成绩表，分析员复制进工作簿计算，再将截图发给负责人。三类痛点是：排除缺考时容易丢失口径、方案与结果脱节、签核结论没有当时的样本证据。上游是教学点期末成绩；本应用替代手工核对与计算；下游由教研负责人决定是否扩大辅导试点。
 
-四个业务模块：**成绩样本**支持筛选、录入和修订；**辅导分组**登记研究范围和排除规则；**检验工作台**提交后台任务并查看失败原因与历史结果；**教研结论**起草解释、负责人签核并下载包括原始样本快照的 JSON 报告。业务数据均在 PostgreSQL 中持久化，统计由 Python worker 计算。
+四个业务模块：**成绩样本**支持筛选、录入和修订；**辅导分组**登记研究范围和排除规则；**检验工作台**提交后台任务并查看失败原因与历史结果；**教研结论**起草解释、负责人签核并下载包括原始样本快照的 JSON 报告。另有**补发合并**模块承接教务学籍与考试成绩的分批补发：按学号分来源合并进台账。业务数据均在 PostgreSQL 中持久化，统计由 Python worker 计算。
 
 ## 启动
 ```sh
@@ -35,6 +35,13 @@ JWT 有效期 8 小时；角色由服务器读取数据库，不信任客户端�
 8. 10:10 负责人签核结论；分析员不能修改已签核报告。
 9. 10:20 观察员下载 `tutor-effect-report-<id>.json`，复核当时样本快照和 SHA-256。
 
+## 补发合并口径
+教务学籍与考试成绩分批补发，直接覆盖会把辅导分组或补考成绩改回旧值，因此按学号分来源合并：**学籍只并姓名、教学点、分组；考试只并成绩、缺考**，各自按行内 `version` 取新。晚到旧版判**过期**忽略；同版异值与未知学号成绩判**异常**隔离并记录原因（未知学号成绩不注册学员，学籍到达后以新批号重发即可）；同版同值判**重复**幂等跳过。每行裁决为新增 / 修订 / 过期 / 异常 / 重复之一，批次对账要求五类合计等于总行数。
+
+批次生命周期为待处理 → 处理中 → 完成 / 失败。同批号同内容重试幂等重放，不新增样本也不重复计账；同批号换内容返回 409 拒绝。并发导入通过批次认领、来源状态行锁与版本守卫更新串行化，最终保留各来源最新值。检验只读取已合并台账，隔离行不进入统计。页面「补发合并」可提交批次、查看每行裁决依据与原文 JSON。
+
+`POST /imports` 提交 `{batch_no, source: enrollment|exam, rows: [...]}`（学籍行：`code/version/name/campus/group`；考试行：`code/version/score/absent`），首次处理返回 201，幂等重放返回 200；`GET /imports` 与 `GET /imports/{id}` 查询批次与行裁决。seed 演示三个批次（`ENR-2026-11-RE01/RE02`、`EXM-2026-11-RE01`），覆盖全部裁决类型，按批号幂等。
+
 ## 算法与口径
 输入是方案教学点内两组 0–100 分成绩。空成绩永远排除；开启排除缺考时再排除 absent=true 的成绩。显示总选中数和排除数。有效样本每组至少 2 条；两组方差都为零时任务失败且保留可读原因。
 
@@ -51,9 +58,9 @@ seed 使用 Random(20261115)：160 名学员，4 教学点、各 80 人两组、
 |数据与队列|PostgreSQL 16、Redis 7，独立 Python worker|
 |认证|PyJWT 2.10.1、PBKDF2|
 
-`frontend/src/api` 负责请求，`stores` 管业务状态，`pages` 分四页，`components/common` 复用结果、表格、状态和通知，`hooks` 封装表单/轮询，`utils` 做转义/下载。`backend/src/models` 定义表，`schemas` 验证，`services` 处理业务与算法，`routes` 提供接口，`controllers` 序列化，`middlewares` 处理审计和全局错误。`backend/migrations/001_initial.sql` 是初始结构；启动使用 metadata.create_all，后续字段迁移需人工管理。
+`frontend/src/api` 负责请求，`stores` 管业务状态，`pages` 分五页，`components/common` 复用结果、表格、状态和通知，`hooks` 封装表单/轮询，`utils` 做转义/下载。`backend/src/models` 定义表，`schemas` 验证，`services` 处理业务与算法（`imports.py` 为补发合并引擎），`routes` 提供接口，`controllers` 序列化，`middlewares` 处理审计和全局错误。`backend/migrations/001_initial.sql` 是初始结构、`002_imports.sql` 是补发合并表；启动使用 metadata.create_all，后续字段迁移需人工管理。
 
-共享枚举位置：角色 ROLES、分组 GROUPS、报告状态 REPORT_STATUSES 在 `backend/src/constants/enums.py`；前端对应 `frontend/src/constants/enums.js` 的 ROLES、GROUPS、STATUS。API输入的 group 枚举同时在 `backend/src/schemas/business.py` 校验。
+共享枚举位置：角色 ROLES、分组 GROUPS、报告状态 REPORT_STATUSES、批次状态 BATCH_STATUSES、行裁决 ROW_DECISIONS、来源字段 SOURCE_FIELDS 在 `backend/src/constants/enums.py`；前端对应 `frontend/src/constants/enums.js` 的 ROLES、GROUPS、STATUS、BATCH_STATUS、DECISIONS、SOURCES。API输入的 group 枚举同时在 `backend/src/schemas/business.py` 校验。
 
 ## Docker 与环境变量
 恰好五服务：frontend/backend/worker/db/redis，各有健康检查。backend 和 worker 依赖健康 DB/Redis，frontend 依赖 backend；worker 依赖 backend 初始化完成。数据库、Redis AOF、报告产物预留共享卷分别命名。worker 真正从 Redis 唤醒并处理数据库待执行任务，每 2 秒更新心跳。Redis 任务通知丢失仍会扫描数据库待执行任务。计算结果权威存于数据库，shared reports 卷供未来文件归档；当前 JSON 按快照直接导出。
@@ -63,7 +70,9 @@ seed 使用 Random(20261115)：160 名学员，4 教学点、各 80 人两组、
 ## 本地开发
 后端在 Python3.11 虚拟环境运行 `pip install -r backend/requirements.txt`，设置 DATABASE_URL、REDIS_URL、JWT_SECRET，进入 backend 后运行 `uvicorn src.main:app --reload` 和另一个终端 `python -m src.worker`。前端无打包步骤，可直接由 Nginx 提供静态文件并代理 /api/。
 
+测试：`pip install pytest httpx` 后在 `backend/` 运行 `python -m pytest tests`。测试用临时 SQLite 库（DATABASE_URL 支持 sqlite，仅测试使用），覆盖交错补发、同版冲突、未知学号隔离、幂等重试、同批号拒绝、并发导入与并发重试、对账与统计口径。
+
 ## 已知范围
-不含 CSV 批量导入、随机分组器或多重比较校正；成绩可逐条录入/修订。教学点为自由文本，前端方案选项来自现有成绩。初始报告为同步真实计算的演示快照，新提交报告全部走异步 worker。外网字体不可用时使用本地 serif 回退。进程中断在 running 状态的任务需管理员在数据库重置为 queued；当前小型版本未提供任务取消/自动回收。审计列表只给管理员，最多最近 100 条。
+批量补发走 JSON 批次接口（单批最多 500 行），不含 CSV 文件上传、随机分组器或多重比较校正；成绩也可逐条录入/修订。教学点为自由文本，前端方案选项来自现有成绩。初始报告为同步真实计算的演示快照，新提交报告全部走异步 worker。外网字体不可用时使用本地 serif 回退。进程中断在 running 状态的任务需管理员在数据库重置为 queued；当前小型版本未提供任务取消/自动回收。审计列表只给管理员，最多最近 100 条。
 
 License: MIT（见 LICENSE）。真实验收证据在批次根 `test-artifacts/gb-3103/`，源码目录不含截图或测试报告。

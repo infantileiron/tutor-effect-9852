@@ -1,4 +1,4 @@
-from sqlalchemy import String,Float,Boolean,Integer,ForeignKey,JSON,Text
+from sqlalchemy import String,Float,Boolean,Integer,ForeignKey,JSON,Text,UniqueConstraint
 from sqlalchemy.orm import Mapped,mapped_column
 from src.config.database import Base
 class User(Base):
@@ -40,3 +40,38 @@ class Audit(Base):
     action:Mapped[str]=mapped_column(String(200))
     status:Mapped[int]=mapped_column(Integer)
     created_at:Mapped[str]=mapped_column(String(40))
+class ImportBatch(Base):
+    __tablename__='import_batches'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    batch_no:Mapped[str]=mapped_column(String(64),unique=True)
+    source:Mapped[str]=mapped_column(String(20))
+    content_hash:Mapped[str]=mapped_column(String(64))
+    status:Mapped[str]=mapped_column(String(20),default='pending')
+    total_rows:Mapped[int]=mapped_column(Integer,default=0)
+    added:Mapped[int]=mapped_column(Integer,default=0)
+    revised:Mapped[int]=mapped_column(Integer,default=0)
+    stale:Mapped[int]=mapped_column(Integer,default=0)
+    quarantined:Mapped[int]=mapped_column(Integer,default=0)
+    duplicate:Mapped[int]=mapped_column(Integer,default=0)
+    error:Mapped[str]=mapped_column(Text,default='')
+    actor:Mapped[str]=mapped_column(String(120),default='')
+    created_at:Mapped[str]=mapped_column(String(40))
+    finished_at:Mapped[str]=mapped_column(String(40),default='')
+class ImportRow(Base):
+    __tablename__='import_rows'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    batch_id:Mapped[int]=mapped_column(ForeignKey('import_batches.id'))
+    row_no:Mapped[int]=mapped_column(Integer)
+    code:Mapped[str]=mapped_column(String(50))
+    version:Mapped[int]=mapped_column(Integer)
+    payload:Mapped[dict]=mapped_column(JSON)
+    decision:Mapped[str]=mapped_column(String(20))
+    reason:Mapped[str]=mapped_column(Text,default='')
+class SourceState(Base):
+    __tablename__='source_states'
+    __table_args__=(UniqueConstraint('code','source'),)
+    id:Mapped[int]=mapped_column(primary_key=True)
+    code:Mapped[str]=mapped_column(String(50))
+    source:Mapped[str]=mapped_column(String(20))
+    version:Mapped[int]=mapped_column(Integer)
+    payload:Mapped[dict]=mapped_column(JSON)
